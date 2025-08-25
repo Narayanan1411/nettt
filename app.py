@@ -206,55 +206,7 @@ def provider_finder_page():
     """Provider finder interface for user location lookup"""
     st.markdown("Enter your location coordinates to find the nearest healthcare providers")
 
-    # Always try to fetch the latest optimized network from Supabase
-    supabase = get_supabase_client()
-    user = st.session_state.get("user", {})
-    providers_df = None
-
-    # Try to get the latest optimized network (admin: their own, user: any latest)
-    try:
-        role = user.get("role", "user")
-        if role == "admin":
-            # Admin: get their own latest
-            query = supabase.table("optimized_networks").select("optimized_providers").eq("user_id", user.get("id", "")).order("created_at", desc=True).limit(1)
-        else:
-            # User: get latest from any admin
-            # (Assumes admin's user_id is used for optimization)
-            admin_profiles = supabase.table("profiles").select("id").eq("role", "admin").execute()
-            admin_ids = [row["id"] for row in admin_profiles.data] if admin_profiles.data else []
-            if admin_ids:
-                query = supabase.table("optimized_networks").select("optimized_providers").in_("user_id", admin_ids).order("created_at", desc=True).limit(1)
-            else:
-                query = None
-        if query:
-            res = query.execute()
-            if res.data and len(res.data) > 0:
-                providers_json = res.data[0]["optimized_providers"]
-                providers_df = pd.DataFrame(json.loads(providers_json))
-    except Exception as e:
-        st.warning(f"Could not fetch optimized network from backend: {e}")
-
-    # Fallback to session state if not found
-    if providers_df is None and st.session_state.get("processed_data") is not None:
-        providers_df = st.session_state.processed_data['providers']
-
-    if providers_df is None:
-        st.warning("⚠️ No provider data available. Please run network optimization as admin to load provider data.")
-        st.info("💡 Go to 'Network Optimization' page and upload provider data to use this feature.")
-        return
-
-    # Support both 'CMS_Rating' and 'CMS Rating' column names
-    if 'CMS Rating' in providers_df.columns and 'CMS_Rating' not in providers_df.columns:
-        providers_df = providers_df.rename(columns={'CMS Rating': 'CMS_Rating'})
-
-    required_cols = ['Latitude', 'Longitude', 'ProviderId', 'Cost', 'CMS_Rating']
-    missing_cols = [col for col in required_cols if col not in providers_df.columns]
-
-    if missing_cols:
-        st.error(f"❌ Missing required columns in provider data: {', '.join(missing_cols)}")
-        return
-
-    # User input section
+    # User input section (always shown)
     st.header("📍 Your Location")
 
     col1, col2 = st.columns(2)
@@ -279,7 +231,7 @@ def provider_finder_page():
             help="Enter your longitude coordinate"
         )
 
-    # Configuration
+    # Configuration (always shown)
     st.header("⚙️ Search Options")
 
     col1, col2, col3 = st.columns(3)
@@ -314,6 +266,49 @@ def provider_finder_page():
 
     # Search button
     if st.button("🔍 Find Nearest Providers", type="primary", use_container_width=True):
+        # Fetch provider data only when searching
+        supabase = get_supabase_client()
+        user = st.session_state.get("user", {})
+        providers_df = None
+        try:
+            role = user.get("role", "user")
+            if role == "admin":
+                query = supabase.table("optimized_networks").select("optimized_providers").eq("user_id", user.get("id", "")).order("created_at", desc=True).limit(1)
+            else:
+                admin_profiles = supabase.table("profiles").select("id").eq("role", "admin").execute()
+                admin_ids = [row["id"] for row in admin_profiles.data] if admin_profiles.data else []
+                if admin_ids:
+                    query = supabase.table("optimized_networks").select("optimized_providers").in_("user_id", admin_ids).order("created_at", desc=True).limit(1)
+                else:
+                    query = None
+            if query:
+                res = query.execute()
+                if res.data and len(res.data) > 0:
+                    providers_json = res.data[0]["optimized_providers"]
+                    providers_df = pd.DataFrame(json.loads(providers_json))
+        except Exception as e:
+            st.warning(f"Could not fetch optimized network from backend: {e}")
+
+        # Fallback to session state if not found
+        if providers_df is None and st.session_state.get("processed_data") is not None:
+            providers_df = st.session_state.processed_data['providers']
+
+        # Support both 'CMS_Rating' and 'CMS Rating' column names
+        if providers_df is not None and 'CMS Rating' in providers_df.columns and 'CMS_Rating' not in providers_df.columns:
+            providers_df = providers_df.rename(columns={'CMS Rating': 'CMS_Rating'})
+
+        required_cols = ['Latitude', 'Longitude', 'ProviderId', 'Cost', 'CMS_Rating']
+        missing_cols = []
+        if providers_df is None:
+            st.error("⚠️ No provider data available. Please run network optimization as admin to load provider data.")
+            return
+        else:
+            missing_cols = [col for col in required_cols if col not in providers_df.columns]
+
+        if missing_cols:
+            st.error(f"❌ Missing required columns in provider data: {', '.join(missing_cols)}")
+            return
+
         with st.spinner("🔍 Searching for nearest providers..."):
             nearest_providers = find_nearest_providers(
                 user_lat, user_lon, providers_df, num_providers, max_distance, min_rating
@@ -556,8 +551,10 @@ def run_optimization(provider_file, member_file, max_drive_time, min_coverage, m
             user = st.session_state.get("user", {})
             supabase = get_supabase_client()
             try:
-                # Save only the optimized providers (as JSON)
-                optimized_providers = results['final_assignments'][['ProviderId', 'ProviderType', 'CMS_Rating', 'Cost']].drop_duplicates().to_dict('records')
+                # Save all columns of optimized providers (not just a subset)
+                optimized_provider_ids = results['final_assignments']['ProviderId'].unique().tolist()
+                all_cols = providers_df.columns.tolist()
+                optimized_providers_full = providers_df[providers_df['ProviderId'].isin(optimized_provider_ids)][all_cols].to_dict('records')
                 supabase.table("optimized_networks").insert({
                     "user_id": user.get("id", ""),
                     "email": user.get("email", ""),
@@ -566,7 +563,7 @@ def run_optimization(provider_file, member_file, max_drive_time, min_coverage, m
                         "min_coverage": min_coverage,
                         "min_rating": min_rating
                     }),
-                    "optimized_providers": json.dumps(optimized_providers)
+                    "optimized_providers": json.dumps(optimized_providers_full)
                 }).execute()
             except Exception as db_exc:
                 st.warning(f"Could not save to backend: {db_exc}")
