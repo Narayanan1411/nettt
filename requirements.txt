@@ -3,5 +3,6 @@ pandas
 plotly
 numpy
 scipy
-numba
 supabase
+numba>=0.59
+llvmlite>=0.42
