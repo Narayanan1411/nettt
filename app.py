@@ -8,7 +8,7 @@ import numpy as np
 import io
 import json
 from typing import Dict, Any
-import traceback
+#import tracebacks
 
 # Supabase integration
 from supabase import create_client, Client
@@ -405,18 +405,35 @@ def display_nearest_providers(providers_df, user_lat, user_lon):
     
     # Providers table
     st.subheader("📋 Provider Details")
-    
+
+    # Show map for the nearest provider (provider only, not user)
+    if not providers_df.empty:
+        best_provider = providers_df.iloc[0]
+        st.markdown("**Best Nearest Provider on Map**")
+        map_df = pd.DataFrame({
+            'lat': [best_provider['Latitude']],
+            'lon': [best_provider['Longitude']],
+            'label': [f"Provider: {best_provider['ProviderId']}"]
+        })
+        st.map(map_df.rename(columns={'lat': 'latitude', 'lon': 'longitude'}), zoom=10)
+
+        # Google Maps directions link (unchanged)
+        user_str = f"{user_lat},{user_lon}"
+        provider_str = f"{best_provider['Latitude']},{best_provider['Longitude']}"
+        gmaps_url = f"https://www.google.com/maps/dir/?api=1&origin={user_str}&destination={provider_str}&travelmode=driving"
+        st.markdown(f"[🗺️ Open Route in Google Maps]({gmaps_url})", unsafe_allow_html=True)
+
     # Format the display data
     display_data = providers_df.copy()
     display_data['Distance_Miles'] = display_data['Distance_Miles'].apply(lambda x: f"{x:.1f}")
     display_data['Cost'] = display_data['Cost'].apply(lambda x: f"${x:,.0f}")
     display_data['CMS_Rating'] = display_data['CMS_Rating'].apply(lambda x: f"{x:.1f}")
-    
+
     # Select columns for display
     display_columns = ['ProviderId', 'Distance_Miles', 'CMS_Rating', 'Cost']
     if 'ProviderType' in display_data.columns:
         display_columns.insert(1, 'ProviderType')
-    
+
     st.dataframe(
         display_data[display_columns],
         use_container_width=True,
